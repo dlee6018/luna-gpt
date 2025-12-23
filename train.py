@@ -3,8 +3,7 @@ import os
 import torch
 from torch.nn import functional as F
 from torch.amp import autocast
-import pandas as pd
-import matplotlib.pyplot as plt
+
 import time
 import math
 
@@ -12,22 +11,7 @@ from model.model import GPT, GPTConfig
 from data.loader import get_training_corpus, tokenizer
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-# ----------------------
-# PLOTTING
-# ----------------------
-def plot_loss(log_file="train_log.csv"):
-    """Plot training loss vs step from CSV log file."""
-    df = pd.read_csv(log_file)
-    plt.figure(figsize=(10, 6))
-    plt.plot(df["step"], df["loss"], linewidth=1.5)
-    plt.xlabel("Step")
-    plt.ylabel("Loss")
-    plt.title("Training Loss")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig("loss_plot.png", dpi=150)
-    plt.show()
-    print(f"Plot saved to loss_plot.png")
+
 
 
 # ----------------------
