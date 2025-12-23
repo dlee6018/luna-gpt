@@ -2,10 +2,31 @@ from dataclasses import dataclass
 import os
 import torch
 from torch.nn import functional as F
+import pandas as pd
+import matplotlib.pyplot as plt
+import time
 
 from model.model import GPT, GPTConfig
 from model.tokenizer import tokenizer
 from data.loader import get_training_corpus
+
+
+# ----------------------
+# PLOTTING
+# ----------------------
+def plot_loss(log_file="train_log.csv"):
+    """Plot training loss vs step from CSV log file."""
+    df = pd.read_csv(log_file)
+    plt.figure(figsize=(10, 6))
+    plt.plot(df["step"], df["loss"], linewidth=1.5)
+    plt.xlabel("Step")
+    plt.ylabel("Loss")
+    plt.title("Training Loss")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("loss_plot.png", dpi=150)
+    plt.show()
+    print(f"Plot saved to loss_plot.png")
 
 
 # ----------------------
@@ -138,7 +159,13 @@ def save_checkpoint(step, loss=None):
 optimizer.zero_grad()
 data_generator = get_training_corpus(train_cfg.micro_batch_size)
 
+# Initialize CSV log file
+log_file = "train_log.csv"
+with open(log_file, "w") as f:
+    f.write("step,loss\n")
+
 for iter in range(train_cfg.max_iters):
+    t0 = time.time()
     batch = next(data_generator)
 
     raw_loss = training_step(batch)
@@ -147,6 +174,10 @@ for iter in range(train_cfg.max_iters):
 
     if (iter + 1) % train_cfg.accum_steps == 0:
         optimizer.step()
+        # torch.cuda.synchronize()
+        t1 = time.time()
+        dt = (t1 - t0) * 1000
+        print(f"Time taken: {t1 - t0:.2f} seconds")
         optimizer.zero_grad()
         step += 1
 
@@ -157,3 +188,7 @@ for iter in range(train_cfg.max_iters):
 
     if iter % train_cfg.log_interval == 0:
         print(f"iter {iter} step {step} | loss {raw_loss.item():.4f}")
+        with open(log_file, "a") as f:
+            f.write(f"{step},{raw_loss.item()}\n")
+
+# plot_loss()

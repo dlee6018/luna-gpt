@@ -7,12 +7,12 @@ import math
 
 @dataclass
 class GPTConfig:
-    block_size: int = 2048
+    block_size: int = 1024 #2048
     vocab_size: int = 32000
-    d_model: int = 1536
-    n_head: int = 24
-    n_layers: int = 24
-    eps: float = 1e-6
+    d_model: int = 1024 #1536
+    n_head: int = 16 #24
+    n_layers: int = 16 #24
+    eps: float = 1e-5
 
     @property
     def d_head(self):
@@ -240,6 +240,6 @@ def count_parameters(model):
     return total, trainable
 
 if __name__ == "__main__":
-    config = GPTConfig.dev()
+    config = GPTConfig()
     model = GPT(config)
     count_parameters(model)

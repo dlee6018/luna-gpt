@@ -1,1 +1,10 @@
-*.ckpt_dev.pt
+# Python
+__pycache__/
+*.pyc
+
+# Checkpoints
+*.pt
+
+# Training artifacts
+train_log.csv
+loss_plot.png
