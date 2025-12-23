@@ -36,10 +36,10 @@ def plot_loss(log_file="train_log.csv"):
 @dataclass
 class TrainConfig:
     lr: float = 2e-4
-    micro_batch_size: int = 8
+    micro_batch_size: int = 16
     accum_steps: int = 32
-    max_iters: int = 50000
-    log_interval: int = 32
+    max_iters: int = 15000
+    log_interval: int = 10
 
     @classmethod
     def dev(cls):
@@ -53,7 +53,7 @@ class TrainConfig:
 class CheckpointConfig:
     path: str = "ckpt.pt"
     best_path: str = "best_model.pt"
-    save_every_steps: int = 2000   # optimizer steps
+    save_every_steps: int = 3000   # optimizer steps
     save_best: bool = True
     
     @classmethod
@@ -111,9 +111,11 @@ if os.path.exists(ckpt_cfg.path):
     optimizer.load_state_dict(ckpt["optimizer"])
     step = ckpt["step"]
     best_loss = ckpt.get("best_loss", float("inf"))
-    print(f"[resume] loaded checkpoint at step {step}")
+    print(f"[resume] loaded checkpoint at step {step}", flush=True)
 
+print("[init] compiling model with torch.compile...", flush=True)
 model = torch.compile(model)
+print("[init] model compiled, starting data generator...", flush=True)
 
 # ----------------------
 # TRAINING STEP
@@ -158,7 +160,7 @@ def save_checkpoint(step, loss=None):
         if loss < best_loss:
             best_loss = loss
             torch.save(model.state_dict(), ckpt_cfg.best_path)
-            print(f"[checkpoint] new best model saved (loss={loss:.4f})")
+            print(f"[checkpoint] new best model saved (loss={loss:.4f})", flush=True)
 
 warmup_steps = 1000
 total_steps = train_cfg.max_iters
@@ -189,6 +191,7 @@ if step == 0:
         f.write("step,loss\n")
 
 total_micro_steps = train_cfg.max_iters * train_cfg.accum_steps
+print(f"[train] starting training loop, {total_micro_steps} micro-steps", flush=True)
 for iter in range(total_micro_steps):
     tokens = next(data_generator)
 
@@ -208,14 +211,14 @@ for iter in range(total_micro_steps):
 
         # Logging
         if step % train_cfg.log_interval == 0:
-            print(f"step {step:6d} | loss {raw_loss.item():.4f} | lr {lr:.2e}")
+            print(f"step {step:6d} | loss {raw_loss.item():.4f} | lr {lr:.2e}", flush=True)
             with open(log_file, "a") as f:
                 f.write(f"{step},{raw_loss.item()}\n")
 
         # Periodic checkpoint
         if step % ckpt_cfg.save_every_steps == 0:
             save_checkpoint(step, raw_loss.item())
-            print(f"[checkpoint] saved at step {step}")
+            print(f"[checkpoint] saved at step {step}", flush=True)
 
 # plot_loss()
 

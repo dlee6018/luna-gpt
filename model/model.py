@@ -8,13 +8,13 @@ import math
 
 @dataclass
 class GPTConfig:
-    block_size: int = 1024 #2048
+    block_size: int = 2048
     vocab_size: int = 32000
     d_model: int = 768 #1536
     n_head: int = 12 #24
     n_layers: int = 12 #24
     eps: float = 1e-5
-    use_gradient_checkpointing: bool = True
+    use_gradient_checkpointing: bool = False
 
     @property
     def d_head(self):

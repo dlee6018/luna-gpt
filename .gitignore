@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+data/__pycache__/
 *.pyc
 
 # Checkpoints

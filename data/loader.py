@@ -2,6 +2,9 @@ from datasets import load_dataset, interleave_datasets
 from transformers import AutoTokenizer
 import warnings
 import torch
+from torch.utils.data import IterableDataset, DataLoader
+from threading import Thread
+from queue import Queue
 
 warnings.filterwarnings("ignore", message=".*ArrowInvalid.*")
 
@@ -119,78 +122,84 @@ mixed_dataset = interleave_datasets(
 # 6. BATCH SAMPLING WITH SEQUENCE PACKING
 # ==========================================
 
-def get_training_corpus(batch_size=8, block_size=1024):
-    """
-    Yields pre-tokenized, packed batches as tensors.
-    
-    Sequence packing: multiple documents are concatenated into a single sequence
-    (separated by EOS tokens) to avoid wasted compute on padding.
-    """
+def _batch_producer(queue, batch_size, block_size):
+    """Background thread that tokenizes and produces batches."""
     eos_token_id = tokenizer.eos_token_id
     pad_token_id = tokenizer.pad_token_id
     
     while True:
         iterator = iter(mixed_dataset)
         batch = []
-        current_seq = []  # tokens being packed into current sequence
+        current_seq = []
         
         for ex in iterator:
             text = ex.get("text")
             if not text or not (5 < len(text) < 20000):
                 continue
             
-            # Tokenize document
+            # Tokenize document (happens in background thread)
             tokens = tokenizer.encode(text, add_special_tokens=False)
             
-            # Add EOS separator between documents
             if current_seq:
                 current_seq.append(eos_token_id)
             
-            # Try to fit tokens into current sequence
             remaining_space = block_size - len(current_seq)
             
             if len(tokens) <= remaining_space:
-                # Fits entirely
                 current_seq.extend(tokens)
             else:
-                # Partially fits or doesn't fit at all
                 if remaining_space > 0 and current_seq:
-                    # Fill remaining space with truncated tokens
                     current_seq.extend(tokens[:remaining_space])
                 
-                # Emit current sequence if full
                 if len(current_seq) >= block_size:
                     batch.append(current_seq[:block_size])
                     if len(batch) >= batch_size:
-                        yield torch.tensor(batch, dtype=torch.long)
+                        queue.put(torch.tensor(batch, dtype=torch.long))
                         batch = []
                     current_seq = []
                 
-                # Start new sequence with remaining tokens
                 tokens = tokens[remaining_space:] if remaining_space > 0 else tokens
                 
-                # Handle very long documents: split into multiple sequences
                 while len(tokens) >= block_size:
                     batch.append(tokens[:block_size])
                     if len(batch) >= batch_size:
-                        yield torch.tensor(batch, dtype=torch.long)
+                        queue.put(torch.tensor(batch, dtype=torch.long))
                         batch = []
                     tokens = tokens[block_size:]
                 
                 current_seq = tokens
         
-        # Handle remaining tokens at end of epoch
         if current_seq:
-            # Pad to block_size
             if len(current_seq) < block_size:
                 current_seq = current_seq + [pad_token_id] * (block_size - len(current_seq))
             batch.append(current_seq[:block_size])
         
         if batch:
-            # Pad final batch if needed
             while len(batch) < batch_size:
                 batch.append([pad_token_id] * block_size)
-            yield torch.tensor(batch, dtype=torch.long)
+            queue.put(torch.tensor(batch, dtype=torch.long))
+
+
+def get_training_corpus(batch_size=8, block_size=1024, prefetch_batches=4):
+    """
+    Yields pre-tokenized, packed batches as tensors.
+    
+    Uses a background thread to tokenize ahead, so GPU doesn't wait for CPU.
+    prefetch_batches: number of batches to buffer ahead (default 4).
+    """
+    queue = Queue(maxsize=prefetch_batches)
+    
+    # Start background producer thread
+    producer = Thread(
+        target=_batch_producer,
+        args=(queue, batch_size, block_size),
+        daemon=True,
+    )
+    producer.start()
+    
+    # Yield from queue (blocks if empty, producer fills it)
+    while True:
+        yield queue.get()
 
 
 # ==========================================
