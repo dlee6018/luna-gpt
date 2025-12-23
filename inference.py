@@ -1,6 +1,8 @@
 import torch
+import torch.nn.functional as F
 from transformers import AutoTokenizer
 from model.model import GPT, GPTConfig
+from data.loader import get_training_corpus
 
 device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 
@@ -61,7 +63,27 @@ def generate(prompt: str, max_new_tokens: int = 100, temperature: float = 0.8, t
     return tokenizer.decode(tokens[0], skip_special_tokens=True)
 
 
+@torch.no_grad()
+def evaluate_val_loss(num_batches=50, batch_size=8, block_size=1024):
+    """Evaluate average validation loss over num_batches."""
+    model.eval()
+    val_loader = get_training_corpus(batch_size=batch_size, block_size=block_size, train=False)
+    
+    total_loss = 0.0
+    for _ in range(num_batches):
+        batch = next(val_loader).to(device)
+        x, y = batch[:, :-1], batch[:, 1:]
+        logits = model(x)
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.reshape(-1))
+        total_loss += loss.item()
+    
+    avg_loss = total_loss / num_batches
+    print(f"[val] loss: {avg_loss:.4f} (over {num_batches} batches)")
+    return avg_loss
+
+
 if __name__ == "__main__":
-    prompt = "The answer of 2 + 2 is "
-    output = generate(prompt)
-    print(output)
+    evaluate_val_loss(num_batches=10, batch_size=8, block_size=1024)
+    # prompt = "The answer of 2 + 2 is "
+    # output = generate(prompt)
+    # print(output)

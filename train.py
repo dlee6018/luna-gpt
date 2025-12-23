@@ -166,6 +166,7 @@ optimizer.zero_grad()
 data_generator = get_training_corpus(
     batch_size=train_cfg.micro_batch_size,
     block_size=config.block_size,
+    train=True,
 )
 
 # Initialize CSV log file
