@@ -36,8 +36,8 @@ def plot_loss(log_file="train_log.csv"):
 @dataclass
 class TrainConfig:
     lr: float = 2e-4
-    micro_batch_size: int = 16
-    accum_steps: int = 32
+    micro_batch_size: int = 10
+    accum_steps: int = 40
     max_iters: int = 15000
     log_interval: int = 10
 
