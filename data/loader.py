@@ -44,9 +44,9 @@ def load_stream(name, subset=None, train=True):
 # 2. LOAD AND MIX DATASETS
 # ==========================================
 
-def get_mixed_dataset(train=True):
+def get_mixed_dataset(train=True, seed_offset=0):
     """Load and mix all datasets. Uses different seed for train vs val."""
-    seed = 42 if train else 1337
+    seed = (42 if train else 1337) + seed_offset
     
     # WEB (FineWeb-Edu)
     ds_web = load_stream("HuggingFaceFW/fineweb-edu", "sample-10BT", train=train)
@@ -119,13 +119,14 @@ def get_mixed_dataset(train=True):
 # 6. BATCH SAMPLING WITH SEQUENCE PACKING
 # ==========================================
 
-def _batch_producer(queue, batch_size, block_size, train=True):
+def _batch_producer(queue, batch_size, block_size, state, train=True):
     """Background thread that tokenizes and produces batches."""
     eos_token_id = tokenizer.eos_token_id
     pad_token_id = tokenizer.pad_token_id
-    mixed_dataset = get_mixed_dataset(train=train)
     
     while True:
+        epoch = state["epoch"]
+        mixed_dataset = get_mixed_dataset(train=train, seed_offset=epoch)
         iterator = iter(mixed_dataset)
         batch = []
         current_seq = []
@@ -176,28 +177,36 @@ def _batch_producer(queue, batch_size, block_size, train=True):
             while len(batch) < batch_size:
                 batch.append([pad_token_id] * block_size)
             queue.put(torch.tensor(batch, dtype=torch.long))
+        
+        state["epoch"] += 1
+        print(f"[data] epoch {epoch} complete, starting epoch {state['epoch']}", flush=True)
 
 
-def get_training_corpus(batch_size=8, block_size=1024, prefetch_batches=4, train=True):
+def get_training_corpus(batch_size=8, block_size=1024, prefetch_batches=4, train=True, start_epoch=0):
     """
-    Yields pre-tokenized, packed batches as tensors.
+    Returns (generator, state) where generator yields pre-tokenized batch tensors.
+    state["epoch"] can be read to get the current epoch.
     
     Uses a background thread to tokenize ahead, so GPU doesn't wait for CPU.
     prefetch_batches: number of batches to buffer ahead (default 4).
+    start_epoch: epoch number to start from (for resuming training).
     """
-    queue = Queue(maxsize=prefetch_batches) # thread safe even when there are multiple threads
+    queue = Queue(maxsize=prefetch_batches)
+    state = {"epoch": start_epoch}
     
     # Start background producer thread
     producer = Thread(
         target=_batch_producer,
-        args=(queue, batch_size, block_size, train),
-        daemon=True, # background thread which will automatically terminate when the main program ends
+        args=(queue, batch_size, block_size, state, train),
+        daemon=True,
     )
     producer.start()
     
-    # Yield from queue (blocks if empty, producer fills it)
-    while True:
-        yield queue.get()
+    def generator():
+        while True:
+            yield queue.get()
+    
+    return generator(), state
 
 
 # ==========================================
@@ -207,9 +216,9 @@ def get_training_corpus(batch_size=8, block_size=1024, prefetch_batches=4, train
 if __name__ == "__main__":
     print("Dataset Mix:", PROBABILITIES)
 
-    data_gen = get_training_corpus(batch_size=4, block_size=1024, train=True)
+    data_gen, state = get_training_corpus(batch_size=4, block_size=1024, train=True)
 
     sample = next(data_gen)
     
-    print(f"Fetched batch shape: {sample.shape}")
+    print(f"Fetched batch shape: {sample.shape}, epoch: {state['epoch']}")
     print(f"Sample tokens (first 50): {sample[0, :50].tolist()}")

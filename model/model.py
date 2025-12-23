@@ -8,7 +8,7 @@ import math
 
 @dataclass
 class GPTConfig:
-    block_size: int = 2048
+    block_size: int = 1024
     vocab_size: int = 32000
     d_model: int = 768 #1536
     n_head: int = 12 #24
