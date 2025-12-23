@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 import math
 
 
@@ -9,10 +10,11 @@ import math
 class GPTConfig:
     block_size: int = 1024 #2048
     vocab_size: int = 32000
-    d_model: int = 1024 #1536
-    n_head: int = 16 #24
-    n_layers: int = 16 #24
+    d_model: int = 768 #1536
+    n_head: int = 12 #24
+    n_layers: int = 12 #24
     eps: float = 1e-5
+    use_gradient_checkpointing: bool = True
 
     @property
     def d_head(self):
@@ -20,7 +22,7 @@ class GPTConfig:
 
     @classmethod
     def dev(cls):
-        return cls(block_size=64, d_model=256, n_head=4, n_layers=4)
+        return cls(block_size=64, d_model=256, n_head=4, n_layers=4, use_gradient_checkpointing=False)
 
 
 class RMSNorm(nn.Module):
@@ -158,13 +160,25 @@ class TransformerBlock(nn.Module):
         self.attn = MultiHeadAttention(config)
         self.norm2 = RMSNorm(config.d_model, config.eps)
         self.mlp = FeedForward(config)
+        self.use_gradient_checkpointing = config.use_gradient_checkpointing
 
     def forward(self, x):
-        # Pre-norm residual attention
-        x = x + self.attn(self.norm1(x))
-        # Pre-norm residual MLP
-        x = x + self.mlp(self.norm2(x))
+        if self.use_gradient_checkpointing and self.training:
+            # Gradient checkpointing: trade compute for memory
+            x = x + checkpoint(self._attn_block, x, use_reentrant=False)
+            x = x + checkpoint(self._mlp_block, x, use_reentrant=False)
+        else:
+            # Pre-norm residual attention
+            x = x + self.attn(self.norm1(x))
+            # Pre-norm residual MLP
+            x = x + self.mlp(self.norm2(x))
         return x
+
+    def _attn_block(self, x):
+        return self.attn(self.norm1(x))
+
+    def _mlp_block(self, x):
+        return self.mlp(self.norm2(x))
 
 
 
