@@ -190,7 +190,7 @@ def get_training_corpus(batch_size=8, block_size=1024, prefetch_batches=4, train
     Uses a background thread to tokenize ahead, so GPU doesn't wait for CPU.
     prefetch_batches: number of batches to buffer ahead (default 4).
     start_epoch: epoch number to start from (for resuming training).
-    is_tokenized: if True, return tokenized tensors; if False, return plain text strings.
+    is_tokenized: if True, return tokenized tensors; if False, return plain text strings. 1 example
     """
     state = {"epoch": start_epoch}
     

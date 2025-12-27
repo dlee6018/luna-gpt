@@ -169,8 +169,10 @@ def evaluate_gpt2_val_loss(num_batches=50, batch_size=8, block_size=1024):
 if __name__ == "__main__":
     # plot_loss()
     model, tokenizer, config, device = load_inference_model()
-    # evaluate_val_loss(model, num_batches=20, batch_size=10, block_size=1024)
+    val_loss = evaluate_val_loss(model, num_batches=20, batch_size=10, block_size=1024)
+    print(f"[val] loss: {val_loss:.4f} (over {20} batches)")
+    
     # evaluate_gpt2_val_loss(num_batches=10, batch_size=20, block_size=1024)
-    prompt = "My name is "
-    output = generate(model, tokenizer, config, device, prompt)
-    print(output)
+    # prompt = "My name is "
+    # output = generate(model, tokenizer, config, device, prompt)
+    # print(output)
