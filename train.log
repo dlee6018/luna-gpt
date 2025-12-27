@@ -1,6 +1,0 @@
-[init] compiling model with torch.compile...
-[init] model compiled, starting data generator...
-[train] starting training loop, 150000 micro-steps
-step    10 | loss 10.7451 | lr 8.57e-06 | 35851 tok/s
-step    20 | loss 9.2570 | lr 1.71e-05 | 49522 tok/s
-step    30 | loss 8.6571 | lr 2.57e-05 | 49524 tok/s

@@ -9,6 +9,7 @@ import math
 
 from model.model import GPT, GPTConfig
 from data.loader import get_training_corpus, tokenizer
+from inference import evaluate_val_loss
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
@@ -26,6 +27,7 @@ class TrainConfig:
     micro_batch_size: int = 20
     accum_steps: int = 10
     max_iters: int = 15000
+    val_check_interval: int = 1000
     log_interval: int = 10
 
     @classmethod
@@ -118,6 +120,7 @@ print("[init] compiling model with torch.compile...", flush=True)
 model = torch.compile(model)
 print("[init] model compiled, starting data generator...", flush=True)
 
+model.train()
 # ----------------------
 # TRAINING STEP
 # ----------------------
@@ -180,7 +183,7 @@ def get_lr(current_step):
     # Cosine decay
     decay_ratio = (current_step - train_cfg.warmup_steps) / (train_cfg.max_iters - train_cfg.warmup_steps)
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-    return train_cfg.min_lr + coeff * (train_cfg.lr - train_cfg.min_lr)
+    return train_cfg.min_lr + (coeff * (train_cfg.lr - train_cfg.min_lr))
 
 # ----------------------
 # TRAIN LOOP
@@ -217,6 +220,7 @@ for iter in range(total_micro_steps):
         # t0 = time.time()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         lr = get_lr(step)
+        lr = lr * 0.1
         for param in optimizer.param_groups:
             param['lr'] = lr
         optimizer.step()
@@ -237,8 +241,21 @@ for iter in range(total_micro_steps):
 
         # Periodic checkpoint
         if step % ckpt_cfg.save_every_steps == 0:
-            save_checkpoint(step, epoch, raw_loss.item())
+            save_checkpoint(step, epoch)
             print(f"[checkpoint] saved at step {step}, epoch {epoch}", flush=True)
+        
+        # log validation loss, for the first 1k, log every 100
+        if (step % train_cfg.val_check_interval == 0):
+            val_loss = evaluate_val_loss(model, num_batches=10, batch_size=20, block_size=1024)
+            print(f"[val] loss: {val_loss:.4f} (over {step} steps)", flush=True)
+            val_log_file = "val_log.csv"
+            if step == 0:
+                with open(val_log_file, "w") as f:
+                    f.write("step,loss\n")
+            with open(val_log_file, "a") as f:
+                f.write(f"{step},{val_loss:.4f}\n")
+            # Save best model based on validation loss
+            save_checkpoint(step, epoch, val_loss)
 
 # plot_loss()
 

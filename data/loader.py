@@ -182,7 +182,7 @@ def _batch_producer(queue, batch_size, block_size, state, train=True):
         print(f"[data] epoch {epoch} complete, starting epoch {state['epoch']}", flush=True)
 
 
-def get_training_corpus(batch_size=8, block_size=1024, prefetch_batches=4, train=True, start_epoch=0):
+def get_training_corpus(batch_size=8, block_size=1024, prefetch_batches=4, train=True, start_epoch=0, is_tokenized=True):
     """
     Returns (generator, state) where generator yields pre-tokenized batch tensors.
     state["epoch"] can be read to get the current epoch.
@@ -190,9 +190,24 @@ def get_training_corpus(batch_size=8, block_size=1024, prefetch_batches=4, train
     Uses a background thread to tokenize ahead, so GPU doesn't wait for CPU.
     prefetch_batches: number of batches to buffer ahead (default 4).
     start_epoch: epoch number to start from (for resuming training).
+    is_tokenized: if True, return tokenized tensors; if False, return plain text strings.
     """
-    queue = Queue(maxsize=prefetch_batches)
     state = {"epoch": start_epoch}
+    
+    if not is_tokenized:
+        # Return plain text strings without tokenization
+        def text_generator():
+            while True:
+                epoch = state["epoch"]
+                mixed_dataset = get_mixed_dataset(train=train, seed_offset=epoch)
+                for ex in mixed_dataset:
+                    text = ex.get("text")
+                    if text and 5 < len(text) < 20000:
+                        yield text
+                state["epoch"] += 1
+        return text_generator(), state
+    
+    queue = Queue(maxsize=prefetch_batches)
     
     # Start background producer thread
     producer = Thread(
