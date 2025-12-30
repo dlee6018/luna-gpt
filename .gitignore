@@ -9,3 +9,6 @@ data/__pycache__/
 # Training artifacts
 train_log.csv
 loss_plot.png
+
+*.log
+*.csv

@@ -10,11 +10,11 @@ import math
 class GPTConfig:
     block_size: int = 1024
     vocab_size: int = 32000
-    d_model: int = 768 #1536
-    n_head: int = 12 #24
-    n_layers: int = 12 #24
+    d_model: int = 1536 #768 
+    n_head: int = 24 # 12
+    n_layers: int = 24 # 12
     eps: float = 1e-5
-    use_gradient_checkpointing: bool = False
+    use_gradient_checkpointing: bool = True
 
     @property
     def d_head(self):

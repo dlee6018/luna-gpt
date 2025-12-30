@@ -19,7 +19,7 @@ def minhash_text(text, n=5, num_perm=128):
 
 
 BATCH_SIZE = 1000
-NUM_SAMPLES = 10000
+NUM_SAMPLES = 100000
 
 seen_hashes = set()
 lsh = MinHashLSH(threshold=0.9, num_perm=128)

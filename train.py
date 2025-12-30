@@ -1,20 +1,32 @@
 from dataclasses import dataclass
 import os
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.nn import functional as F
 from torch.amp import autocast
+from torch.utils.data import DataLoader, DistributedSampler
 
 import time
 import math
 
 from model.model import GPT, GPTConfig
-from data.loader import get_training_corpus, tokenizer
+from data.loader import data_gen, get_training_corpus, tokenizer
 from inference import evaluate_val_loss
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
 
+def setup_ddp():
+    dist.init_process_group(backend='nccl')
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    return local_rank
+
+
+
+    
 
 # ----------------------
 # TRAIN CONFIG
@@ -24,11 +36,12 @@ class TrainConfig:
     lr: float = 6e-4
     min_lr: float = 6e-5
     warmup_steps: int = 700
-    micro_batch_size: int = 20
-    accum_steps: int = 10
+    micro_batch_size: int = 6
+    accum_steps: int = 192
     max_iters: int = 15000
     val_check_interval: int = 1000
     log_interval: int = 10
+    num_workers: int = 8
 
     @classmethod
     def dev(cls):
@@ -81,8 +94,9 @@ else:
     ckpt_cfg = CheckpointConfig()
     config = GPTConfig()
 
-model = GPT(config).to(device)
-
+local_rank = setup_ddp()
+model = GPT(config).to(local_rank)
+model = DDP(model, device_ids=[local_rank])
 
 optimizer = torch.optim.AdamW(
     model.parameters(),
@@ -196,6 +210,10 @@ data_generator, data_state = get_training_corpus(
     start_epoch=epoch,
 )
 
+sampler = DistributedSampler(data_generator)
+loader = DataLoader(data_generator, sampler = sampler, batch_size = train_cfg.micro_batch_size, num_workers = train_cfg.num_workers) # num_workers =  total cpu cores/ # of gpus
+
+
 # Initialize CSV log file
 log_file = "train_log.csv"
 if step == 0:
@@ -220,7 +238,7 @@ for iter in range(total_micro_steps):
         # t0 = time.time()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         lr = get_lr(step)
-        lr = lr * 0.1
+        # lr = lr * 0.1
         for param in optimizer.param_groups:
             param['lr'] = lr
         optimizer.step()
