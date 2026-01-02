@@ -33,10 +33,9 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
-        # Compute RMS along last dimension
-        # rms = sqrt(mean(x^2))
-        rms = x.norm(2, dim=-1, keepdim=True) / math.sqrt(x.size(-1))
-        return self.weight * (x / (rms + self.eps))
+        # Compute RMS normalization: x / sqrt(mean(x^2) + eps)
+        # Using rsqrt is more efficient than division
+        return self.weight * x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
 
 class MultiHeadAttention(nn.Module):
