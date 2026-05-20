@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer
 from model.model import GPT, GPTConfig
-from data.loader import get_training_corpus
+from data.loader import get_dataloader
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -51,18 +51,24 @@ def load_inference_model(
     model = model_class(config).to(device)
 
     # Load checkpoint weights
-    unwanted_prefix = '_orig_mod.'
     state_dict = torch.load(ckpt_path, map_location=device)
     # If loading a checkpoint with just the weights dict, or a full dict with {"model": ...}
     if isinstance(state_dict, dict) and "model" in state_dict:
         state_dict = state_dict["model"]
-    # Remove unwanted prefixes
-    for key in list(state_dict.keys()):
-        if key.startswith(unwanted_prefix):
-            new_key = key[len(unwanted_prefix):]
-            state_dict[new_key] = state_dict.pop(key)
+    
+    # Remove unwanted prefixes (DDP adds 'module.', compiled models add '_orig_mod.')
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        new_key = key
+        # Remove '_orig_mod.' prefix (from torch.compile)
+        if new_key.startswith('_orig_mod.'):
+            new_key = new_key[len('_orig_mod.'):]
+        # Remove 'module.' prefix (from DDP)
+        if new_key.startswith('module.'):
+            new_key = new_key[len('module.'):]
+        new_state_dict[new_key] = value
 
-    model.load_state_dict(state_dict)
+    model.load_state_dict(new_state_dict)
     model.eval()
     print(f"[inference] loaded weights from {ckpt_path}")
     return model, tokenizer, config, device
@@ -99,16 +105,40 @@ def generate(model, tokenizer, config, device, prompt: str, max_new_tokens: int 
 @torch.no_grad()
 def evaluate_val_loss(model, num_batches=50, batch_size=8, block_size=1024):
     """Evaluate average validation loss over num_batches."""
-    device = "cuda"
+    # Get device from model
+    device = next(model.parameters()).device
+    
+    # Initialize tokenizer
+    tokenizer = AutoTokenizer.from_pretrained("huggyllama/llama-30b", model_max_length=int(1e9))
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
     model.eval()
-    val_loader, val_state  = get_training_corpus(batch_size=batch_size, block_size=block_size, train=False)
+    val_loader = get_dataloader(
+        tokenizer=tokenizer,
+        batch_size=batch_size,
+        block_size=block_size,
+        train=False,
+        num_workers=2
+    )
     
     total_loss = 0.0
+    data_iter = iter(val_loader)
     for _ in range(num_batches):
-        batch = next(val_loader).to(device)
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            data_iter = iter(val_loader)
+            batch = next(data_iter)
+        
+        batch = batch.to(device, non_blocking=True)
         x, y = batch[:, :-1], batch[:, 1:]
         logits = model(x)
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.reshape(-1))
+        loss = F.cross_entropy(
+            logits.view(-1, logits.size(-1)), 
+            y.reshape(-1),
+            ignore_index=tokenizer.pad_token_id
+        )
         total_loss += loss.item()
     
     avg_loss = total_loss / num_batches
@@ -121,20 +151,39 @@ def evaluate_gpt2_val_loss(num_batches=50, batch_size=8, block_size=1024):
     """Evaluate GPT-2 from HuggingFace on validation set for comparison."""
     from transformers import GPT2LMHeadModel, GPT2Tokenizer
     
+    device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+    
     # Load GPT-2
     gpt2_tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
     gpt2_tokenizer.pad_token = gpt2_tokenizer.eos_token
     gpt2_model = GPT2LMHeadModel.from_pretrained("gpt2").to(device)
     gpt2_model.eval()
     
+    # Initialize LLaMA tokenizer for decoding
+    llama_tokenizer = AutoTokenizer.from_pretrained("huggyllama/llama-30b", model_max_length=int(1e9))
+    if llama_tokenizer.pad_token is None:
+        llama_tokenizer.pad_token = llama_tokenizer.eos_token
+    
     # Get validation data (tokenized with LLaMA tokenizer)
-    val_loader, _ = get_training_corpus(batch_size=batch_size, block_size=block_size, train=False)
+    val_loader = get_dataloader(
+        tokenizer=llama_tokenizer,
+        batch_size=batch_size,
+        block_size=block_size,
+        train=False,
+        num_workers=2
+    )
     
     total_loss = 0.0
+    data_iter = iter(val_loader)
     for _ in range(num_batches):
-        batch = next(val_loader)
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            data_iter = iter(val_loader)
+            batch = next(data_iter)
+        
         # Decode from LLaMA tokens to text, then re-encode with GPT-2 tokenizer
-        texts = [tokenizer.decode(seq, skip_special_tokens=True) for seq in batch]
+        texts = [llama_tokenizer.decode(seq, skip_special_tokens=True) for seq in batch]
         
         # Tokenize with GPT-2
         gpt2_inputs = gpt2_tokenizer(

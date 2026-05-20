@@ -1,17 +1,19 @@
 from dataclasses import dataclass
 import os
+from pickle import TRUE
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.nn import functional as F
 from torch.amp import autocast
-from torch.utils.data import DataLoader, DistributedSampler
+# DataLoader is now handled by get_dataloader in loader.py
 
 import time
 import math
+from transformers import AutoTokenizer
 
 from model.model import GPT, GPTConfig
-from data.loader import data_gen, get_training_corpus, tokenizer
+from data.loader import get_dataloader
 from inference import evaluate_val_loss
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -75,15 +77,14 @@ class CheckpointConfig:
         )
 
 
-device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
-
-if device == "cuda":
+# Device will be set after DDP setup
+if torch.cuda.is_available():
     torch.set_float32_matmul_precision('high')  # enables TF32
     torch.backends.cudnn.allow_tf32 = True
 # ----------------------
 # MODE SELECTION
 # ----------------------
-DEV_MODE = False  # Set to True for quick iteration, False for real training
+DEV_MODE = TRUE  # Set to True for quick iteration, False for real training
 
 if DEV_MODE:
     train_cfg = TrainConfig.dev()
@@ -95,7 +96,14 @@ else:
     config = GPTConfig()
 
 local_rank = setup_ddp()
-model = GPT(config).to(local_rank)
+device = f"cuda:{local_rank}"
+
+# Initialize tokenizer
+tokenizer = AutoTokenizer.from_pretrained("huggyllama/llama-30b", model_max_length=int(1e9))
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+model = GPT(config).to(device)
 model = DDP(model, device_ids=[local_rank])
 
 optimizer = torch.optim.AdamW(
@@ -103,7 +111,7 @@ optimizer = torch.optim.AdamW(
     lr=train_cfg.lr,
     betas=(0.9, 0.95),
     weight_decay=0.1,
-    fused=(device == "cuda"),
+    fused=(device.startswith("cuda")),
 )
 
 
@@ -141,13 +149,13 @@ model.train()
 def training_step(tokens):
     # tokens: pre-tokenized tensor of shape (B, block_size)
     # Move to device if not already there
-    tokens = tokens.to(device)
+    tokens = tokens.to(device, non_blocking=True)
 
     # input and target
     x = tokens[:, :-1]
     y = tokens[:, 1:]
 
-    with autocast(device_type=device, dtype=torch.bfloat16, enabled=(device == "cuda")):
+    with autocast(device_type="cuda", dtype=torch.bfloat16, enabled=(device.startswith("cuda"))):
         logits = model(x)
         B, T, V = logits.shape
 
@@ -203,15 +211,13 @@ def get_lr(current_step):
 # TRAIN LOOP
 # ----------------------
 optimizer.zero_grad()
-data_generator, data_state = get_training_corpus(
+train_loader = get_dataloader(
+    tokenizer=tokenizer,
     batch_size=train_cfg.micro_batch_size,
     block_size=config.block_size,
     train=True,
-    start_epoch=epoch,
+    num_workers=train_cfg.num_workers
 )
-
-sampler = DistributedSampler(data_generator)
-loader = DataLoader(data_generator, sampler = sampler, batch_size = train_cfg.micro_batch_size, num_workers = train_cfg.num_workers) # num_workers =  total cpu cores/ # of gpus
 
 
 # Initialize CSV log file
@@ -225,16 +231,21 @@ print(f"[train] starting training loop, {total_micro_steps} micro-steps", flush=
 
 t0 = time.time()
 
-for iter in range(total_micro_steps):
-    tokens = next(data_generator)
-    if data_state["epoch"] > epoch:
-        epoch = data_state["epoch"]
+data_iter = iter(train_loader)
+for micro_step in range(total_micro_steps):
+    try:
+        tokens = next(data_iter)
+    except StopIteration:
+        # Restart iterator when dataset is exhausted
+        data_iter = iter(train_loader)
+        tokens = next(data_iter)
+        epoch += 1
 
     raw_loss = training_step(tokens)
     loss = raw_loss / train_cfg.accum_steps
     loss.backward()
 
-    if (iter + 1) % train_cfg.accum_steps == 0:
+    if (micro_step + 1) % train_cfg.accum_steps == 0:
         # t0 = time.time()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         lr = get_lr(step)

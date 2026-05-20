@@ -15,6 +15,9 @@ class GPTConfig:
     n_layers: int = 24 # 12
     eps: float = 1e-5
     use_gradient_checkpointing: bool = True
+    use_moe: bool = False
+    num_experts: int = 8
+    top_k: int = 2
 
     @property
     def d_head(self):
@@ -22,7 +25,16 @@ class GPTConfig:
 
     @classmethod
     def dev(cls):
-        return cls(block_size=64, d_model=256, n_head=4, n_layers=4, use_gradient_checkpointing=False)
+        return cls(
+            block_size=64,
+            d_model=256,
+            n_head=4,
+            n_layers=4,
+            use_gradient_checkpointing=False,
+            use_moe=False,
+            num_experts=4,
+            top_k=2,
+        )
 
 
 class RMSNorm(nn.Module):
@@ -30,7 +42,7 @@ class RMSNorm(nn.Module):
         super().__init__()
         self.eps = eps
         # learnable scale parameter
-        self.weight = nn.Parameter(torch.ones(dim))
+        self.weight = nn.Parameter(torch.ones(dim)) # basically tensor with learnable weights/registered to .parameters()
 
     def forward(self, x):
         # Compute RMS along last dimension
@@ -151,6 +163,52 @@ class FeedForward(nn.Module):
 
     def forward(self, x):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
+class MixtureOfExperts(nn.Module):
+    """Top-k routed MoE FFN (replaces dense FeedForward in a TransformerBlock)."""
+
+    def __init__(self, config: GPTConfig):
+        super().__init__()
+        if config.num_experts < 1:
+            raise ValueError("num_experts must be >= 1")
+        if not 1 <= config.top_k <= config.num_experts:
+            raise ValueError("top_k must be between 1 and num_experts")
+        self.num_experts = config.num_experts
+        self.top_k = config.top_k
+        self.experts = nn.ModuleList(
+            [FeedForward(config) for _ in range(self.num_experts)]
+        )
+        self.router = nn.Linear(config.d_model, self.num_experts, bias=False)
+
+    def forward(self, x):
+        B, T, D = x.shape
+        x_flat = x.reshape(B * T, D)
+
+        router_logits = self.router(x_flat)
+        router_probs = F.softmax(router_logits, dim=-1)
+        value, indices = torch.topk(router_probs, self.top_k, dim=-1)
+        value = value / value.sum(dim=-1, keepdim=True)
+
+        out = torch.zeros_like(x_flat)
+        for k in range(self.top_k):
+            expert_idx_at_rank_k = indices[:, k]
+            weight_at_rank_k = value[:, k]
+            for i in range(self.num_experts):
+                token_mask = expert_idx_at_rank_k == i
+                if not token_mask.any():
+                    continue
+                masked_tokens = x_flat[token_mask]
+                expert_outputs = self.experts[i](masked_tokens)
+                out[token_mask] += (
+                    weight_at_rank_k[token_mask].unsqueeze(-1) * expert_outputs
+                )
+
+        return out.reshape(B, T, D)
+
+
+def _make_mlp(config: GPTConfig) -> nn.Module:
+    if config.use_moe:
+        return MixtureOfExperts(config)
+    return FeedForward(config)
 
 
 class TransformerBlock(nn.Module):
@@ -159,7 +217,7 @@ class TransformerBlock(nn.Module):
         self.norm1 = RMSNorm(config.d_model, config.eps)
         self.attn = MultiHeadAttention(config)
         self.norm2 = RMSNorm(config.d_model, config.eps)
-        self.mlp = FeedForward(config)
+        self.mlp = _make_mlp(config)
         self.use_gradient_checkpointing = config.use_gradient_checkpointing
 
     def forward(self, x):
@@ -216,7 +274,11 @@ class GPT(nn.Module):
         scale = math.sqrt(2 * self.config.n_layers)
         for block in self.layers:
             block.attn.Wo.weight.data /= scale
-            block.mlp.w2.weight.data /= scale
+            if isinstance(block.mlp, MixtureOfExperts):
+                for expert in block.mlp.experts:
+                    expert.w2.weight.data /= scale
+            else:
+                block.mlp.w2.weight.data /= scale
 
     def forward(self, idx):
         B, T = idx.shape
